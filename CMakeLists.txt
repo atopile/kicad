@@ -80,10 +80,25 @@ set( KICAD_WASM_LAYER "${CMAKE_SOURCE_DIR}/../wasm" CACHE PATH "Path to the WASM
 option( KICAD_OCC_SERVICE_WASM
     "WASM only: build the standalone OCC 3D service (occ_service)" OFF )
 
+# Product profile for the browser-embedded PCB layout editor.  Keep this as a
+# target-composition switch instead of deleting upstream application sources:
+# rebases stay small, while CMake never configures unrelated KiCad programs.
+option( KICAD_WASM_PCB_ONLY
+    "WASM only: configure the standalone PCB editor and its dependencies" OFF )
+
+if( KICAD_WASM_PCB_ONLY AND NOT EMSCRIPTEN )
+    message( FATAL_ERROR "KICAD_WASM_PCB_ONLY is only valid for Emscripten builds" )
+endif()
+
 # Merged pcbnew+eeschema WASM editor (editor-unification Part 2): link BOTH kifaces into
 # one kicad_editor executable whose frame is chosen at runtime by --frame. OFF by default
 # (standalone per-app trees are byte-identical); only the kicad_editor build tree passes ON.
 option( KICAD_WASM_MERGED_EDITOR "Link the pcbnew and eeschema kifaces into one WASM image (kicad_editor)" OFF )
+
+if( KICAD_WASM_PCB_ONLY AND ( KICAD_WASM_MERGED_EDITOR OR KICAD_OCC_SERVICE_WASM ) )
+    message( FATAL_ERROR
+        "KICAD_WASM_PCB_ONLY cannot be combined with merged-editor or OCC-service targets" )
+endif()
 if( EMSCRIPTEN AND KICAD_WASM_MERGED_EDITOR )
     # PCB-side compile renames for the merged image. Two classes of symbol collide with
     # eeschema (verified by a strong+weak llvm-nm intersection of the two kiface object
@@ -968,20 +983,26 @@ include( MinGWResourceCompiler )
 # Find ngspice library, required for integrated circuit simulator
 find_package( ngspice REQUIRED )
 
-# Find OpenCascade, required for STEP plugin and tools
-find_package(OCC)
-if( NOT OCC_FOUND )
-    MESSAGE( FATAL_ERROR "================================================================\n"
-                         " OpenCASCADE was not found!\n"
-                         "================================================================\n")
+# OpenCascade is required only by the STEP/3D plugins and exporter service.
+# The PCB-only WASM profile excludes those targets and deliberately does not
+# build OCC into its sysroot.
+if( KICAD_WASM_PCB_ONLY )
+    message( STATUS "OpenCASCADE not required for PCB-only WASM build" )
+else()
+    find_package(OCC)
+    if( NOT OCC_FOUND )
+        MESSAGE( FATAL_ERROR "================================================================\n"
+                             " OpenCASCADE was not found!\n"
+                             "================================================================\n")
+    endif()
+    if( OCC_VERSION_STRING VERSION_LESS 7.5.0 )
+        MESSAGE( FATAL_ERROR "================================================================\n"
+                             "OpenCASCADE version ${OCC_VERSION_STRING} was found.\n"
+                             "  KiCad requires a minimum version of 7.5.0\n"
+                             "================================================================\n")
+    endif()
+    include_directories( SYSTEM ${OCC_INCLUDE_DIR} )
 endif()
-if( OCC_VERSION_STRING VERSION_LESS 7.5.0 )
-    MESSAGE( FATAL_ERROR "================================================================\n"
-                         "OpenCASCADE version ${OCC_VERSION_STRING} was found.\n"
-                         "  KiCad requires a minimum version of 7.5.0\n"
-                         "================================================================\n")
-endif()
-include_directories( SYSTEM ${OCC_INCLUDE_DIR} )
 
 # Try to find Protobuf with modern approach first, fallback to legacy if needed
 set( _protobuf_found FALSE )
@@ -1340,8 +1361,10 @@ if( NOT EMSCRIPTEN OR KICAD_BUILD_3D_VIEWER_WASM )
     # 3D viewer uses GLU - for WASM, requires GLU stubs and LEGACY_GL_EMULATION
     add_subdirectory( 3d-viewer )
 endif()
-add_subdirectory( eeschema )
-add_subdirectory( gerbview )
+if( NOT KICAD_WASM_PCB_ONLY )
+    add_subdirectory( eeschema )
+    add_subdirectory( gerbview )
+endif()
 add_subdirectory( pcbnew )
 if( EMSCRIPTEN AND KICAD_WASM_MERGED_EDITOR )
     # Merged pcbnew+eeschema editor executable. Lives in the WASM layer (outside the
@@ -1357,13 +1380,18 @@ if( EMSCRIPTEN AND KICAD_OCC_SERVICE_WASM )
     # as the artifact subdir (build-wasm/kicad-occ_service/occ_service/).
     add_subdirectory( ${KICAD_WASM_LAYER}/occ-service ${CMAKE_BINARY_DIR}/occ_service )
 endif()
-add_subdirectory( pagelayout_editor )
-add_subdirectory( bitmap2component )
-add_subdirectory( pcb_calculator )
-add_subdirectory( plugins )             # 3D plugins must be built before kicad
-add_subdirectory( cvpcb )               # must be after pcbnew
-add_subdirectory( kicad )               # should follow pcbnew, eeschema, api
-add_subdirectory( tools )
+# idf3 is still linked by pcbnew until the exporter/importer pruning phase, so
+# keep utils configured in both profiles. The remaining programs are not part
+# of the embedded layout editor.
+if( NOT KICAD_WASM_PCB_ONLY )
+    add_subdirectory( pagelayout_editor )
+    add_subdirectory( bitmap2component )
+    add_subdirectory( pcb_calculator )
+    add_subdirectory( plugins )             # 3D plugins must be built before kicad
+    add_subdirectory( cvpcb )               # must be after pcbnew
+    add_subdirectory( kicad )               # should follow pcbnew, eeschema, api
+    add_subdirectory( tools )
+endif()
 add_subdirectory( utils )
 
 if( KICAD_BUILD_QA_TESTS )

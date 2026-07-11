@@ -2310,7 +2310,9 @@ int BOARD_EDITOR_CONTROL::DrillOrigin( const TOOL_EVENT& aEvent )
 void BOARD_EDITOR_CONTROL::setTransitions()
 {
     Go( &BOARD_EDITOR_CONTROL::New,                    ACTIONS::doNew.MakeEvent() );
+#ifndef PCBJAM_PCB_ONLY
     Go( &BOARD_EDITOR_CONTROL::Open,                   ACTIONS::open.MakeEvent() );
+#endif
     Go( &BOARD_EDITOR_CONTROL::Save,                   ACTIONS::save.MakeEvent() );
     Go( &BOARD_EDITOR_CONTROL::SaveAs,                 ACTIONS::saveAs.MakeEvent() );
     Go( &BOARD_EDITOR_CONTROL::SaveCopy,               ACTIONS::saveCopy.MakeEvent() );

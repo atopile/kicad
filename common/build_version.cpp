@@ -41,7 +41,9 @@
 extern std::string GetKicadCurlVersion();
 extern std::string GetCurlLibVersion();
 
+#ifndef PCBJAM_PCB_ONLY
 #include <Standard_Version.hxx>
+#endif
 
 // ngspice header - only include when ngspice is available
 #if defined(NGSPICE_BUILD_VERSION) || defined(NGSPICE_HAVE_CONFIG_H) || defined(NGSPICE_PACKAGE_VERSION)
@@ -308,7 +310,9 @@ wxString GetVersionInfoData( const wxString& aTitle, bool aHtml, bool aBrief )
          << ( BOOST_VERSION / 100 % 1000 ) << wxT( "." )
          << ( BOOST_VERSION % 100 ) << eol;
 
+#ifndef PCBJAM_PCB_ONLY
     aMsg << indent4 << "OCC: " << OCC_VERSION_COMPLETE << eol;
+#endif
     aMsg << indent4 << "Curl: " << GetCurlLibVersion() << eol;
 
 #if defined( NGSPICE_BUILD_VERSION )

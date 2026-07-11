@@ -28,7 +28,9 @@
 #include <string>
 
 #include <advanced_config.h>
+#ifndef PCBJAM_PCB_ONLY
 #include <api/api_plugin_manager.h>
+#endif
 #include <bitmaps.h>
 #include <board.h>
 #include <board_design_settings.h>
@@ -302,6 +304,7 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
         break;
 
     case TOOLBAR_LOC::TOP_MAIN:
+#ifndef PCBJAM_PCB_ONLY
         if( Kiface().IsSingle() )
         {
             config.AppendAction( ACTIONS::doNew );
@@ -309,14 +312,16 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
         }
 
         config.AppendAction( ACTIONS::save );
+#endif
 
-        config.AppendSeparator()
-              .AppendAction( PCB_ACTIONS::boardSetup );
+        config.AppendAction( PCB_ACTIONS::boardSetup );
 
+#ifndef PCBJAM_PCB_ONLY
         config.AppendSeparator()
               .AppendAction( ACTIONS::pageSettings )
               .AppendAction( ACTIONS::print )
               .AppendAction( ACTIONS::plot );
+#endif
 
         config.AppendSeparator()
               .AppendAction( ACTIONS::undo )
@@ -344,8 +349,10 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
               .AppendAction( PCB_ACTIONS::unlock );
 
         config.AppendSeparator()
-              .AppendAction( ACTIONS::showFootprintEditor )
-              .AppendAction( ACTIONS::showFootprintBrowser )
+              .AppendAction( ACTIONS::showFootprintBrowser );
+
+#ifndef PCBJAM_PCB_ONLY
+        config.AppendAction( ACTIONS::showFootprintEditor )
               .AppendAction( ACTIONS::show3DViewer );
 
         config.AppendSeparator();
@@ -355,12 +362,14 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
         else
             config.AppendAction( PCB_ACTIONS::importNetlist );
 
-        config.AppendAction( PCB_ACTIONS::runDRC );
-
         config.AppendSeparator();
         config.AppendAction( PCB_ACTIONS::showEeschema );
+#endif
+        config.AppendAction( PCB_ACTIONS::runDRC );
         config.AppendControl( PCB_ACTION_TOOLBAR_CONTROLS::currentVariant );
+#ifndef PCBJAM_PCB_ONLY
         config.AppendControl( ACTION_TOOLBAR_CONTROLS::ipcScripting );
+#endif
 
         break;
 
@@ -454,6 +463,7 @@ void PCB_EDIT_FRAME::configureToolbars()
 
     RegisterCustomToolbarControlFactory( PCB_ACTION_TOOLBAR_CONTROLS::currentVariant, variantSelectionCtrlFactory );
 
+#ifndef PCBJAM_PCB_ONLY
     // IPC/Scripting plugin control
     // TODO (ISM): Clean this up to make IPC actions just normal tool actions to get rid of this entire
     // control
@@ -490,6 +500,7 @@ void PCB_EDIT_FRAME::configureToolbars()
             };
 
     RegisterCustomToolbarControlFactory( ACTION_TOOLBAR_CONTROLS::ipcScripting, pluginControlFactory );
+#endif
 }
 
 

@@ -87,7 +87,11 @@ PROJECT_LOCAL_SETTINGS::PROJECT_LOCAL_SETTINGS( PROJECT* aProject, const wxStrin
             {
                 if( !aVal.is_array() || aVal.empty() )
                 {
+#ifdef PCBJAM_PCB_ONLY
+                    m_VisibleItems |= GAL_SET::DefaultVisible() & UserVisbilityLayers();
+#else
                     m_VisibleItems |= UserVisbilityLayers();
+#endif
                     return;
                 }
 
@@ -115,7 +119,11 @@ PROJECT_LOCAL_SETTINGS::PROJECT_LOCAL_SETTINGS( PROJECT* aProject, const wxStrin
 
                 // Restore corrupted state
                 if( !visible.any() && !none )
+#ifdef PCBJAM_PCB_ONLY
+                    m_VisibleItems |= GAL_SET::DefaultVisible() & UserVisbilityLayers();
+#else
                     m_VisibleItems |= UserVisbilityLayers();
+#endif
                 else
                     m_VisibleItems |= UserVisbilityLayers() & visible;
             },
