@@ -247,8 +247,13 @@ PCBNEW_SETTINGS::PCBNEW_SETTINGS()
     m_params.emplace_back( new PARAM<int>( "pcb_display.net_names_mode",
             &m_Display.m_NetNames, 3, 0, 3 ) );
 
+#ifdef PCBJAM_PCB_ONLY
+    const bool showPadClearanceDefault = false;
+#else
+    const bool showPadClearanceDefault = true;
+#endif
     m_params.emplace_back( new PARAM<bool>( "pcb_display.pad_clearance",
-            &m_Display.m_PadClearance, true ) );
+            &m_Display.m_PadClearance, showPadClearanceDefault ) );
 
     m_params.emplace_back( new PARAM<bool>( "pcb_display.pad_use_via_color_for_normal_th_padstacks",
             &m_Display.m_UseViaColorForNormalTHPadstacks, false ) );

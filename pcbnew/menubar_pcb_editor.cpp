@@ -26,7 +26,9 @@
 
 #include <advanced_config.h>
 #include <bitmaps.h>
+#ifndef PCBJAM_PCB_ONLY
 #include <file_history.h>
+#endif
 #include <kiface_base.h>
 #include <kiway.h>
 #include <pcb_edit_frame.h>
@@ -52,6 +54,7 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
 
     // Recreate all menus:
 
+#ifndef PCBJAM_PCB_ONLY
     //-- File menu -----------------------------------------------------------
     //
     ACTION_MENU*   fileMenu = new ACTION_MENU( false, selTool );
@@ -166,6 +169,7 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
 
     fileMenu->AppendSeparator();
     fileMenu->AddQuitOrClose( &Kiface(), _( "PCB Editor" ) );
+#endif
 
     //-- Edit menu -----------------------------------------------------------
     //
@@ -231,7 +235,9 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
 
     viewMenu->AppendSeparator();
     viewMenu->Add( ACTIONS::showFootprintBrowser );
+#ifndef PCBJAM_PCB_ONLY
     viewMenu->Add( ACTIONS::show3DViewer );
+#endif
 
     viewMenu->AppendSeparator();
     viewMenu->Add( ACTIONS::zoomInCenter );
@@ -391,6 +397,24 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
     //
     ACTION_MENU* toolsMenu = new ACTION_MENU( false, selTool );
 
+#ifdef PCBJAM_PCB_ONLY
+    // The surrounding web application owns files, projects, libraries and
+    // persistence. Keep only board-editing operations in the embedded frame.
+    toolsMenu->Add( PCB_ACTIONS::boardSetup );
+
+    toolsMenu->AppendSeparator();
+    toolsMenu->Add( PCB_ACTIONS::drcRuleEditor );
+    toolsMenu->Add( PCB_ACTIONS::zonesManager );
+
+    toolsMenu->AppendSeparator();
+    toolsMenu->Add( PCB_ACTIONS::cleanupTracksAndVias );
+    toolsMenu->Add( PCB_ACTIONS::removeUnusedPads );
+    toolsMenu->Add( PCB_ACTIONS::cleanupGraphics );
+    toolsMenu->Add( PCB_ACTIONS::repairBoard );
+
+    toolsMenu->AppendSeparator();
+    toolsMenu->Add( ACTIONS::openPreferences );
+#else
     toolsMenu->Add( ACTIONS::updatePcbFromSchematic )
             ->Enable( !Kiface().IsSingle() || KIWAY::FaceRegistered( KIWAY::FACE_SCH ) );
     toolsMenu->Add( PCB_ACTIONS::showEeschema );
@@ -463,7 +487,9 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
 
     toolsMenu->AppendSeparator();
     toolsMenu->Add( submenuActionPlugins );
+#endif
 
+#ifndef PCBJAM_PCB_ONLY
     //-- Preferences menu ----------------------------------------------------
     //
     ACTION_MENU* prefsMenu = new ACTION_MENU( false, selTool );
@@ -478,19 +504,26 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
 
     prefsMenu->AppendSeparator();
     AddMenuLanguageList( prefsMenu, selTool );
+#endif
 
 
     //--MenuBar -----------------------------------------------------------
     //
+#ifndef PCBJAM_PCB_ONLY
     menuBar->Append( fileMenu,    _( "&File" ) );
+#endif
     menuBar->Append( editMenu,    _( "&Edit" ) );
     menuBar->Append( viewMenu,    _( "&View" ) );
     menuBar->Append( placeMenu,   _( "&Place" ) );
     menuBar->Append( routeMenu,   _( "Ro&ute" ) );
     menuBar->Append( inspectMenu, _( "&Inspect" ) );
+#ifdef PCBJAM_PCB_ONLY
+    menuBar->Append( toolsMenu,   _( "&Board" ) );
+#else
     menuBar->Append( toolsMenu,   _( "&Tools" ) );
     menuBar->Append( prefsMenu,   _( "P&references" ) );
     AddStandardHelpMenu( menuBar );
+#endif
 
     SetMenuBar( menuBar );
     delete oldMenuBar;

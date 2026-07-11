@@ -792,7 +792,9 @@ GAL_SET GAL_SET::DefaultVisible()
         LAYER_VIA_BURIED,
         LAYER_VIA_THROUGH,
         // LAYER_HIDDEN_TEXT,    // DEPCREATED SINCE 9.0. Invisible text hidden by default
+#ifndef PCBJAM_PCB_ONLY
         LAYER_ANCHOR,
+#endif
         LAYER_RATSNEST,
         LAYER_GRID,
         LAYER_GRID_AXES,
@@ -811,7 +813,9 @@ GAL_SET GAL_SET::DefaultVisible()
         LAYER_DRC_WARNING,
         LAYER_DRC_SHAPES,
         // LAYER_DRC_EXCLUSION,      // DRC exclusions hidden by default
+#ifndef PCBJAM_PCB_ONLY
         LAYER_DRAWINGSHEET,
+#endif
         LAYER_GP_OVERLAY,
         LAYER_SELECT_OVERLAY,
         LAYER_PCB_BACKGROUND,
