@@ -86,12 +86,6 @@ private:
     GLuint m_triangleVAO;   ///< VAO for triangle
 };
 
-/**
- * Get the global fullscreen quad instance.
- * This is lazily initialized on first use.
- */
-FULLSCREEN_QUAD& GetFullscreenQuad();
-
 } // namespace KIGFX
 
 #endif /* FULLSCREEN_QUAD_H_ */
