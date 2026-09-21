@@ -123,6 +123,7 @@ DIALOG_PAD_PROPERTIES::DIALOG_PAD_PROPERTIES( PCB_BASE_FRAME* aParent, PAD* aPad
         m_parent( aParent ),
         m_initialized( false ),
         m_editLayer( F_Cu ),
+        m_previewGalOptions( aParent->GetGalDisplayOptions() ),
         m_posX( aParent, m_posXLabel, m_posXCtrl, m_posXUnits ),
         m_posY( aParent, m_posYLabel, m_posYCtrl, m_posYUnits ),
         m_sizeX( aParent, m_sizeXLabel, m_sizeXCtrl, m_sizeXUnits ),
@@ -304,6 +305,11 @@ DIALOG_PAD_PROPERTIES::~DIALOG_PAD_PROPERTIES()
 
     delete m_previewPad;
     delete m_axisOrigin;
+
+    // The canvas borrows m_previewGalOptions. Destroy it before the dialog's
+    // members, rather than leaving it to wxWindow's base-class destructor.
+    delete m_padPreviewGAL;
+    m_padPreviewGAL = nullptr;
 }
 
 
@@ -334,14 +340,13 @@ void DIALOG_PAD_PROPERTIES::OnCancel( wxCommandEvent& event )
 
 void DIALOG_PAD_PROPERTIES::prepareCanvas()
 {
-    GAL_DISPLAY_OPTIONS_IMPL opts = m_parent->GetGalDisplayOptions();
     COLOR_SETTINGS*            colorSettings = m_parent->GetColorSettings();
 
-    opts.m_forceDisplayCursor = false;
+    m_previewGalOptions.m_forceDisplayCursor = false;
 
     // Initialize the canvas to display the pad
     m_padPreviewGAL = new PCB_DRAW_PANEL_GAL( m_boardViewPanel, -1, wxDefaultPosition,
-                                              wxDefaultSize, opts,
+                                              wxDefaultSize, m_previewGalOptions,
                                               m_parent->GetCanvas()->GetBackend() );
 
     m_padPreviewSizer->Add( m_padPreviewGAL, 12, wxEXPAND | wxALL, 5 );

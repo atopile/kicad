@@ -37,6 +37,7 @@
 #include <padstack.h>
 #include <pcb_shape.h>
 #include <origin_viewitem.h>
+#include <gal_display_options_common.h>
 #include <dialog_pad_properties_base.h>
 #include <widgets/text_ctrl_eval.h>
 #include <pcb_draw_panel_gal.h>
@@ -170,6 +171,7 @@ private:
                                               //     editing a custom pad shape
 
     std::vector<PCB_SHAPE*>  m_highlight;     // shapes highlighted in GAL mode
+    GAL_DISPLAY_OPTIONS_IMPL m_previewGalOptions;
     PCB_DRAW_PANEL_GAL*      m_padPreviewGAL;
     KIGFX::ORIGIN_VIEWITEM*  m_axisOrigin;    // origin of the preview canvas
 
