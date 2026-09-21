@@ -113,6 +113,8 @@ public:
      */
     void BlitFullscreenQuad();
 
+    FULLSCREEN_QUAD& GetFullscreenQuad() { return m_fullscreenQuad; }
+
 protected:
     /// Binds a specific Framebuffer Object.
     void bindFb( unsigned int aFb );
@@ -153,6 +155,7 @@ protected:
 
     // Blit shader for compositing (replacing legacy fixed-function pipeline)
     std::unique_ptr<SHADER> m_blitShader;
+    FULLSCREEN_QUAD         m_fullscreenQuad; ///< Geometry owned by this compositor's context
     int                     m_blitTexUniform;       ///< Location of texture uniform
 
     /**

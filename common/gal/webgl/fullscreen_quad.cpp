@@ -178,12 +178,3 @@ void FULLSCREEN_QUAD::Cleanup()
 
     m_initialized = false;
 }
-
-
-// Global instance
-static FULLSCREEN_QUAD s_fullscreenQuad;
-
-FULLSCREEN_QUAD& KIGFX::GetFullscreenQuad()
-{
-    return s_fullscreenQuad;
-}

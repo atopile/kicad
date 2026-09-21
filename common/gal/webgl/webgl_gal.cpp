@@ -170,8 +170,6 @@ static wxGLAttributes getGLAttribs()
 
 wxGLContext* WEBGL_GAL::m_glMainContext = nullptr;
 int          WEBGL_GAL::m_instanceCounter = 0;
-GLuint       WEBGL_GAL::g_fontTexture = 0;
-bool         WEBGL_GAL::m_isBitmapFontLoaded = false;
 
 namespace KIGFX
 {
@@ -531,6 +529,11 @@ WEBGL_GAL::~WEBGL_GAL()
         delete m_tempManager;
     }
 
+    // WebGL contexts cannot share textures. Release the atlas with its owning
+    // context current, including when initialization failed after allocation.
+    if( m_fontTexture )
+        glDeleteTextures( 1, &m_fontTexture );
+
     gl_mgr->UnlockCtx( m_glPrivContext );
 
     // If it was the main context, then it will be deleted
@@ -544,12 +547,6 @@ WEBGL_GAL::~WEBGL_GAL()
     if( m_instanceCounter == 0 )
     {
         gl_mgr->LockCtx( m_glMainContext, this );
-
-        if( m_isBitmapFontLoaded )
-        {
-            glDeleteTextures( 1, &g_fontTexture );
-            m_isBitmapFontLoaded = false;
-        }
 
         gl_mgr->UnlockCtx( m_glMainContext );
         gl_mgr->DestroyCtx( m_glMainContext );
@@ -741,12 +738,14 @@ void WEBGL_GAL::BeginDrawing()
         // Keep bitmap font texture always bound to the second texturing unit
         const GLint FONT_TEXTURE_UNIT = 2;
 
-        // Either load the font atlas to video memory, or simply bind it to a texture unit
+        // Each canvas has an independent WebGL context, so it needs its own atlas.
         if( !m_isBitmapFontLoaded )
         {
             glActiveTexture( GL_TEXTURE0 + FONT_TEXTURE_UNIT );
-            glGenTextures( 1, &g_fontTexture );
-            glBindTexture( GL_TEXTURE_2D, g_fontTexture );
+            if( !m_fontTexture )
+                glGenTextures( 1, &m_fontTexture );
+
+            glBindTexture( GL_TEXTURE_2D, m_fontTexture );
             glTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, font_image.width, font_image.height, 0, GL_RGB,
                           GL_UNSIGNED_BYTE, font_image.pixels );
             glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
@@ -760,7 +759,7 @@ void WEBGL_GAL::BeginDrawing()
         else
         {
             glActiveTexture( GL_TEXTURE0 + FONT_TEXTURE_UNIT );
-            glBindTexture( GL_TEXTURE_2D, g_fontTexture );
+            glBindTexture( GL_TEXTURE_2D, m_fontTexture );
             glActiveTexture( GL_TEXTURE0 );
         }
 
