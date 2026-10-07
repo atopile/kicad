@@ -328,19 +328,27 @@ set( EESCHEMA_SIM_SRCS
     widgets/tuner_slider_base.cpp
     )
 
-# WASM: the four largest BSIM/SOI/HSIM data initializer functions exceed the
-# V8/SpiderMonkey limit on locals per function ("too many locals") once
-# compiled. Replace them with empty stubs — the simulator UI is unreachable
-# in WASM anyway (see wasm/stubs/ngspice/sharedspice.h).
+# WASM: the simulator runs against the ngspice_service worker
+# (docs/features/ngspice-split/): the sharedspice client stub forwards the
+# ngSpice_* calls NGSPICE::init_dll binds in its __EMSCRIPTEN__ branch (see
+# wasm/stubs/ngspice/sharedspice.h). The four large BSIM/SOI/HSIM model-data
+# initializers historically tripped the JS engines' "too many locals" limit at
+# -O0; -O2 collapses the locals (same per-source workaround as the msys block
+# at the top of this file), keeping the full parameter tables for the
+# simulator model dialogs.
 if( EMSCRIPTEN )
-    list( REMOVE_ITEM EESCHEMA_SIM_SRCS
+    set_source_files_properties(
         sim/sim_model_ngspice_data_bsim4.cpp
         sim/sim_model_ngspice_data_b3soi.cpp
         sim/sim_model_ngspice_data_b4soi.cpp
         sim/sim_model_ngspice_data_hsim.cpp
-    )
+        # clang 24 (emcc 6) hard-errors when a TU's -O level differs from the
+        # PCH's ("OptimizationLevel differs in precompiled file"); these are
+        # generated data tables that gain nothing from the PCH, so opt them
+        # out instead of losing the -O2 locals collapse.
+        PROPERTIES COMPILE_OPTIONS "-O2" SKIP_PRECOMPILE_HEADERS ON )
     list( APPEND EESCHEMA_SIM_SRCS
-        ${KICAD_WASM_LAYER}/stubs/eeschema_ngspice_data_stubs.cpp
+        ${KICAD_WASM_LAYER}/stubs/sharedspice_client.cpp
     )
 endif()
 
@@ -454,6 +462,7 @@ set( EESCHEMA_SRCS
     sch_draw_panel.cpp
     sch_edit_frame.cpp
     sch_field.cpp
+    sch_footprint_field_reconciler.cpp
     sch_group.cpp
     sch_item.cpp
     sch_item_alignment.cpp
@@ -713,6 +722,16 @@ if( EMSCRIPTEN AND KICAD_SYM_CONVERTER_WASM )
     # SCHEMATIC_SETTINGS' ctor constructs NGSPICE_SETTINGS (spice_settings.cpp,
     # another pure settings TU), and lint's SCHEMATIC::SetProject runs it.
     list( APPEND EESCHEMA_SRCS sim/spice_settings.cpp )
+    # Kept back for the pcbjam-mcp export subcommands (--netlist/--bom/--plot):
+    # the two text netlist emitters (+ their base; SPICE stays out with sim/),
+    # and the plotter pair — SCH_RENDER_SETTINGS is *defined* in sch_painter.cpp,
+    # SCH_PLOTTER drives the plotter backends from common (no GAL context).
+    list( APPEND EESCHEMA_SRCS
+        netlist_exporters/netlist_exporter_base.cpp
+        netlist_exporters/netlist_exporter_kicad.cpp
+        netlist_exporters/netlist_exporter_xml.cpp
+        sch_painter.cpp
+        sch_plotter.cpp )
 endif()
 
 # the main Eeschema program, in DSO form.
@@ -859,41 +878,11 @@ if( EMSCRIPTEN AND KICAD_SYM_CONVERTER_WASM )
         ${CMAKE_CURRENT_SOURCE_DIR}/sch_io/sch_io_mgr.cpp PROPERTIES
         COMPILE_DEFINITIONS KICAD_SYM_CONVERTER_WASM )
 
-    add_executable( sym_convert
-        # Link-order diet stubs (ysync 0009): listed before the kiface objects
-        # so --allow-multiple-definition resolves the duplicated definitions to
-        # these (first definition wins) — severs schematic-load/save + the font
-        # engine from the converter binary.
-        ${KICAD_WASM_LAYER}/cli/sym_convert_stubs.cpp
-        ${KICAD_WASM_LAYER}/cli/sym_convert_main.cpp )
-
-    target_link_libraries( sym_convert
-        PRIVATE
-            ${EESCHEMA_KIFACE_LIBRARIES}
-        )
-    target_link_options( sym_convert PRIVATE
-        "LINKER:--allow-multiple-definition"
-        )
-
-    # Run as a Node CLI: real FS, auto-run main(), exit when done; no embind
-    # entry, no asyncify (the conversion path is synchronous). -g0 strips debug
-    # info so wasm-emscripten-finalize doesn't OOM on DWARF (the editor build
-    # defers finalize to the host for that reason; the converter has no such
-    # need). These override the browser-oriented values inherited from
-    # CMAKE_EXE_LINKER_FLAGS.
-    # --pre-js supplies the wxConfig JS hooks (getConfigEntryLength, …) that the
-    # web editor gets from wx.js, backed by an in-memory store (no browser here).
-    # -Oz runs wasm-opt -Oz at link: whole-module dead-code elimination strips the
-    # unreachable editor code (the converter only reaches SCH_IO_MGR::ConvertLibrary)
-    # plus size optimization. -g0 drops debug info (also keeps finalize from OOMing).
-    # -sERROR_ON_UNDEFINED_SYMBOLS=0: the kiface prune (ysync 0009 diet, cut e)
-    # leaves ~20 dangling references from vtable-pinned-but-never-run editor code
-    # in retained model TUs (hypertext nav in sch_field/text, sim glue in
-    # sch_symbol, Kiface() in autoplace). They become aborting JS imports; live
-    # ones would trap loudly, dead ones are GC'd. The qa conversion byte-compare
-    # is the correctness gate.
-    set_target_properties( sym_convert PROPERTIES
-        LINK_FLAGS "-Oz -g0 --profiling-funcs -sSTACK_SIZE=2MB -sENVIRONMENT=node -sNODERAWFS=1 -sINVOKE_RUN=1 -sEXIT_RUNTIME=1 -sASYNCIFY=0 -sPTHREAD_POOL_SIZE=2 -sERROR_ON_UNDEFINED_SYMBOLS=0 --pre-js ${KICAD_WASM_LAYER}/cli/sym_convert_pre.js" )
+    # The standalone sym_convert executable is RETIRED (pcbjam-mcp 0001): the
+    # merged kicad_tools image (wasm/tools/, gated by KICAD_TOOLS_WASM at the
+    # top level) carries the converter + lint + erc/netlist/bom/plot on this
+    # same dieted kiface. This option now only gates the diet above and the
+    # SCH_IO factory trim.
 endif()
 
 if( MSVC )

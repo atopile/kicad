@@ -432,7 +432,7 @@ void DRAWING_SHEET_PARSER::parsePolygon( DS_DATA_ITEM_POLYGONS * aItem )
             break;
 
         case T_repeat:
-            aItem->m_RepeatCount = parseInt( 1, 100 );
+            aItem->m_RepeatCount = parseInt( 1, DS_MAX_REPEAT_COUNT );
             NeedRIGHT();
             break;
 
@@ -510,7 +510,7 @@ void DRAWING_SHEET_PARSER::parseBitmap( DS_DATA_ITEM_BITMAP * aItem )
             break;
 
         case T_repeat:
-            aItem->m_RepeatCount = parseInt( 1, 100 );
+            aItem->m_RepeatCount = parseInt( 1, DS_MAX_REPEAT_COUNT );
             NeedRIGHT();
             break;
 
@@ -687,7 +687,7 @@ void DRAWING_SHEET_PARSER::parseGraphic( DS_DATA_ITEM * aItem )
             break;
 
         case T_repeat:
-            aItem->m_RepeatCount = parseInt( 1, 100 );
+            aItem->m_RepeatCount = parseInt( 1, DS_MAX_REPEAT_COUNT );
             NeedRIGHT();
             break;
 
@@ -747,7 +747,7 @@ void DRAWING_SHEET_PARSER::parseText( DS_DATA_ITEM_TEXT* aItem )
             break;
 
         case T_repeat:
-            aItem->m_RepeatCount = parseInt( 1, 100 );
+            aItem->m_RepeatCount = parseInt( 1, DS_MAX_REPEAT_COUNT );
             NeedRIGHT();
             break;
 

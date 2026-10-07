@@ -47,6 +47,8 @@
 #include <bitmaps.h>
 #include <confirm.h>
 #include <footprint.h>
+#include <footprint_library_adapter.h>
+#include <project_pcb.h>
 #include <lset.h>
 #include <trace_helpers.h>
 #include <pcbnew_id.h>
@@ -776,6 +778,10 @@ void PCB_EDIT_FRAME::OnCrossProbeFlashTimer( wxTimerEvent& aEvent )
 
 PCB_EDIT_FRAME::~PCB_EDIT_FRAME()
 {
+    // Always ensure that we are unregistered even in a close without graceful doCloseWindow()
+    if( GetBoard() )
+        Kiway().LocalHistory().UnregisterSaver( GetBoard() );
+
 #ifdef KICAD_SCRIPTING
     ScriptingOnDestructPcbEditFrame( this );
 #endif
@@ -1871,59 +1877,20 @@ void PCB_EDIT_FRAME::SetActiveLayer( PCB_LAYER_ID aLayer, bool aForceRedraw )
     if( std::optional<int> newClearanceLayer = getClearanceLayerForActive( aLayer ) )
         GetCanvas()->GetView()->SetLayerVisible( *newClearanceLayer, true );
 
-    GetCanvas()->GetView()->UpdateAllItemsConditionally(
-            [&]( KIGFX::VIEW_ITEM* aItem ) -> int
-            {
-                if( !aItem->IsBOARD_ITEM() )
-                    return 0;
+    // per-layer view groups already hold each layer geometry so an active-layer change needs no
+    // re-tessellation just clearance visibility above and the recolour in SetHighContrastLayer
 
-                BOARD_ITEM* item = static_cast<BOARD_ITEM*>( aItem );
-
-                // Note: KIGFX::REPAINT isn't enough for things that go from invisible to visible
-                // as they won't be found in the view layer's itemset for re-painting.
-                if( GetDisplayOptions().m_ContrastModeDisplay == HIGH_CONTRAST_MODE::HIDDEN )
-                {
-                    if( item->IsOnLayer( oldLayer ) || item->IsOnLayer( aLayer ) )
-                        return KIGFX::ALL;
-                }
-
-                if( item->Type() == PCB_VIA_T )
-                {
-                    PCB_VIA* via = static_cast<PCB_VIA*>( item );
-
-                    // Vias on a restricted layer set must be redrawn when the active layer
-                    // is changed
-                    if( via->GetViaType() == VIATYPE::BLIND
-                            || via->GetViaType() == VIATYPE::BURIED
-                            || via->GetViaType() == VIATYPE::MICROVIA )
-                    {
-                        return KIGFX::REPAINT;
-                    }
-
-                    if( via->GetRemoveUnconnected() )
-                        return KIGFX::ALL;
-                }
-                else if( item->Type() == PCB_PAD_T )
-                {
-                    PAD* pad = static_cast<PAD*>( item );
-
-                    if( pad->GetRemoveUnconnected() )
-                        return KIGFX::ALL;
-                }
-
-                return 0;
-            } );
-
-    GetCanvas()->Refresh();
+    // idle refresh coalesces mashed hotkeys into one repaint forced redraws stay immediate
+    if( aForceRedraw )
+        GetCanvas()->Refresh();
+    else
+        GetCanvas()->RequestRefresh();
 }
 
 
 void PCB_EDIT_FRAME::OnBoardLoaded()
 {
     wxFileName fn( GetBoard()->GetFileName() );
-
-    if( !Prj().IsNullProject() )
-        Kiway().LocalHistory().Init( Prj().GetProjectPath() );
 
     ENUM_MAP<PCB_LAYER_ID>& layerEnum = ENUM_MAP<PCB_LAYER_ID>::Instance();
 
@@ -2125,9 +2092,22 @@ void PCB_EDIT_FRAME::SetLastPath( LAST_PATH_TYPE aType, const wxString& aLastPat
 }
 
 
+#ifdef __EMSCRIPTEN__
+// pcbjam: board-level state (layers, stackup, setup, paper, title block) has no item
+// events, so the collab bridge re-checks the board header on every modification
+// (proposal 21 WP4). Weak: images without the collab bridge resolve it to null.
+extern "C" __attribute__( ( weak ) ) void kicadCollabPcbOnModify();
+#endif
+
+
 void PCB_EDIT_FRAME::OnModify()
 {
     PCB_BASE_FRAME::OnModify();
+
+#ifdef __EMSCRIPTEN__
+    if( kicadCollabPcbOnModify )
+        kicadCollabPcbOnModify();
+#endif
     Kiway().LocalHistory().NoteFileChange( GetBoard()->GetFileName() );
     m_ZoneFillsDirty = true;
 
@@ -2144,6 +2124,9 @@ void PCB_EDIT_FRAME::OnModify()
 
 void PCB_EDIT_FRAME::HardRedraw()
 {
+    // The libraries were read once and then cached. A refresh is where they need to be refreshed
+    PROJECT_PCB::FootprintLibAdapter( &Prj() )->RefreshChangedLibraries();
+
     Update3DView( true, true );
 
     std::shared_ptr<CONNECTIVITY_DATA> connectivity = GetBoard()->GetConnectivity();
@@ -2295,7 +2278,9 @@ void PCB_EDIT_FRAME::FindNext( bool reverse )
 
 int PCB_EDIT_FRAME::TestStandalone()
 {
-    if( Kiface().IsSingle() )
+    // A standalone build can still sync when the SCH kiface is linked in-process
+    // (merged WASM editor) — Player( FRAME_SCH ) works without a project manager.
+    if( Kiface().IsSingle() && !KIWAY::FaceRegistered( KIWAY::FACE_SCH ) )
         return 0;
 
     // Update PCB requires a netlist. Therefore the schematic editor must be running
@@ -2328,12 +2313,23 @@ int PCB_EDIT_FRAME::TestStandalone()
 
         frame->OpenProjectFiles( std::vector<wxString>( 1, fn.GetFullPath() ) );
 
+#ifdef __EMSCRIPTEN__
+        // WASM merged editor (project-sync 0001): there is no project manager whose
+        // bookkeeping needs the schematic frame visible, and every tool owns its own
+        // browser tab — showing the spawned eeschema frame would hijack the PCB tab.
+        // Keep it hidden: the netlist fetch (ExpressMail MAIL_SCH_GET_NETLIST) needs
+        // only the loaded SCHEMATIC, not a visible frame or GAL. Leaving it unshown
+        // also keeps IsShownOnScreen() false, so this block re-runs OpenProjectFiles
+        // on every sync — each update re-reads the (live-restaged) MEMFS schematic
+        // instead of a stale cached parse (repeat-sync freshness).
+#else
         // we show the schematic editor frame, because do not show is seen as
         // a not yet opened schematic by Kicad manager, which is not the case
         frame->Show( true );
 
         // bring ourselves back to the front
         Raise();
+#endif
     }
 
     return 1;            //Success!
@@ -2539,10 +2535,12 @@ static void processTextItem( const PCB_TEXT& aSrc, PCB_TEXT& aDest,
         *aUpdated |= aSrc.GetTextSize() != aDest.GetTextSize();
         *aUpdated |= aSrc.GetTextThickness() != aDest.GetTextThickness();
         *aUpdated |= aSrc.GetTextAngle() != aDest.GetTextAngle();
+        *aUpdated |= aSrc.IsKnockout() != aDest.IsKnockout();
     }
     else
     {
         aDest.SetAttributes( aSrc );
+        aDest.SetIsKnockout( aSrc.IsKnockout() );
     }
 
     if( aResetTextPositions )
@@ -2556,7 +2554,7 @@ static void processTextItem( const PCB_TEXT& aSrc, PCB_TEXT& aDest,
     }
 
     aDest.SetLocked( aSrc.IsLocked() );
-    const_cast<KIID&>( aDest.m_Uuid ) = aSrc.m_Uuid;
+    aDest.SetUuid( aSrc.m_Uuid );
 }
 
 
@@ -2667,9 +2665,9 @@ void PCB_EDIT_FRAME::ExchangeFootprint( FOOTPRINT* aExisting, FOOTPRINT* aNew,
 
     aNew->SetLocked( aExisting->IsLocked() );
 
-    const_cast<KIID&>( aNew->m_Uuid ) = aExisting->m_Uuid;
-    const_cast<KIID&>( aNew->Reference().m_Uuid ) = aExisting->Reference().m_Uuid;
-    const_cast<KIID&>( aNew->Value().m_Uuid ) = aExisting->Value().m_Uuid;
+    aNew->SetUuid( aExisting->m_Uuid );
+    aNew->Reference().SetUuid( aExisting->Reference().m_Uuid );
+    aNew->Value().SetUuid( aExisting->Value().m_Uuid );
 
     std::vector<PAD*> oldPads;
     oldPads.reserve( aExisting->Pads().size() );
@@ -2692,7 +2690,7 @@ void PCB_EDIT_FRAME::ExchangeFootprint( FOOTPRINT* aExisting, FOOTPRINT* aNew,
         PAD* newPad = match.second;
 
         matchedNewPads.insert( newPad );
-        const_cast<KIID&>( newPad->m_Uuid ) = oldPad->m_Uuid;
+        newPad->SetUuid( oldPad->m_Uuid );
         newPad->SetLocalRatsnestVisible( oldPad->GetLocalRatsnestVisible() );
         newPad->SetPinFunction( oldPad->GetPinFunction() );
         newPad->SetPinType( oldPad->GetPinType() );
@@ -2708,7 +2706,7 @@ void PCB_EDIT_FRAME::ExchangeFootprint( FOOTPRINT* aExisting, FOOTPRINT* aNew,
         if( matchedNewPads.find( newPad ) != matchedNewPads.end() )
             continue;
 
-        const_cast<KIID&>( newPad->m_Uuid ) = KIID();
+        newPad->ResetUuid();
         newPad->SetNetCode( NETINFO_LIST::UNCONNECTED );
     }
 
@@ -2735,13 +2733,13 @@ void PCB_EDIT_FRAME::ExchangeFootprint( FOOTPRINT* aExisting, FOOTPRINT* aNew,
 
         oldToNewDrawings[ oldItem ] = newItem;
         matchedNewDrawings.insert( newItem );
-        const_cast<KIID&>( newItem->m_Uuid ) = oldItem->m_Uuid;
+        newItem->SetUuid( oldItem->m_Uuid );
     }
 
     for( BOARD_ITEM* newItem : newDrawings )
     {
         if( matchedNewDrawings.find( newItem ) == matchedNewDrawings.end() )
-            const_cast<KIID&>( newItem->m_Uuid ) = KIID();
+            newItem->ResetUuid();
     }
 
     std::vector<ZONE*> oldZones;
@@ -2765,13 +2763,13 @@ void PCB_EDIT_FRAME::ExchangeFootprint( FOOTPRINT* aExisting, FOOTPRINT* aNew,
         ZONE* newZone = match.second;
 
         matchedNewZones.insert( newZone );
-        const_cast<KIID&>( newZone->m_Uuid ) = oldZone->m_Uuid;
+        newZone->SetUuid( oldZone->m_Uuid );
     }
 
     for( ZONE* newZone : newZones )
     {
         if( matchedNewZones.find( newZone ) == matchedNewZones.end() )
-            const_cast<KIID&>( newZone->m_Uuid ) = KIID();
+            newZone->ResetUuid();
     }
 
     std::vector<PCB_POINT*> oldPoints;
@@ -2795,13 +2793,13 @@ void PCB_EDIT_FRAME::ExchangeFootprint( FOOTPRINT* aExisting, FOOTPRINT* aNew,
         PCB_POINT* newPoint = match.second;
 
         matchedNewPoints.insert( newPoint );
-        const_cast<KIID&>( newPoint->m_Uuid ) = oldPoint->m_Uuid;
+        newPoint->SetUuid( oldPoint->m_Uuid );
     }
 
     for( PCB_POINT* newPoint : newPoints )
     {
         if( matchedNewPoints.find( newPoint ) == matchedNewPoints.end() )
-            const_cast<KIID&>( newPoint->m_Uuid ) = KIID();
+            newPoint->ResetUuid();
     }
 
     std::vector<PCB_GROUP*> oldGroups;
@@ -2825,13 +2823,13 @@ void PCB_EDIT_FRAME::ExchangeFootprint( FOOTPRINT* aExisting, FOOTPRINT* aNew,
         PCB_GROUP* newGroup = match.second;
 
         matchedNewGroups.insert( newGroup );
-        const_cast<KIID&>( newGroup->m_Uuid ) = oldGroup->m_Uuid;
+        newGroup->SetUuid( oldGroup->m_Uuid );
     }
 
     for( PCB_GROUP* newGroup : newGroups )
     {
         if( matchedNewGroups.find( newGroup ) == matchedNewGroups.end() )
-            const_cast<KIID&>( newGroup->m_Uuid ) = KIID();
+            newGroup->ResetUuid();
     }
 
     std::vector<PCB_FIELD*> oldFieldsVec;
@@ -2872,13 +2870,13 @@ void PCB_EDIT_FRAME::ExchangeFootprint( FOOTPRINT* aExisting, FOOTPRINT* aNew,
 
         oldToNewFields[ oldField ] = newField;
         matchedNewFields.insert( newField );
-        const_cast<KIID&>( newField->m_Uuid ) = oldField->m_Uuid;
+        newField->SetUuid( oldField->m_Uuid );
     }
 
     for( PCB_FIELD* newField : newFieldsVec )
     {
         if( matchedNewFields.find( newField ) == matchedNewFields.end() )
-            const_cast<KIID&>( newField->m_Uuid ) = KIID();
+            newField->ResetUuid();
     }
 
     std::unordered_map<PCB_TEXT*, PCB_TEXT*> oldToNewTexts;
@@ -3185,49 +3183,74 @@ void PCB_EDIT_FRAME::ProjectChanged()
                     // See SCHEMATIC::SaveToHistory: the dirty check is only valid in ZIP
                     // mode.  In INCREMENTAL mode the manual-save flow clears the dirty
                     // flag before the saver runs, so filtering would drop the snapshot.
-                    bool filterClean = Pgm().GetCommonSettings()->m_Backup.format == BACKUP_FORMAT::ZIP;
+                    bool filterClean = !Pgm().GetCommonSettings()->AutosaveUsesLocalHistory();
 
                     if( filterClean && !IsContentModified() )
                         return;
 
                     GetBoard()->SaveToHistory( aProjectPath, aFileData );
-                } );
+                },
+                GetBoard()->GetHistoryLifetimeToken() );
     }
+}
+
+
+bool PCB_EDIT_FRAME::interactiveOperationInProgress() const
+{
+    TOOL_MANAGER* mgr = GetToolManager();
+
+    if( !mgr )
+        return false;
+
+    TOOL_BASE* currentTool = mgr->GetCurrentTool();
+
+    // When a single item that can be point-edited is selected, the point editor
+    // tool will be active instead of the selection tool.  It blocks undo/redo
+    // while the user is actually dragging points around, though, so we can use
+    // this as an initial check.
+    if( UndoRedoBlocked() )
+        return true;
+
+    // A tool other than passive selection or point editing is actively modifying
+    // the model (drawing, dragging, routing, etc.).
+    if( currentTool != mgr->GetTool<PCB_SELECTION_TOOL>()
+        && currentTool != mgr->GetTool<PCB_POINT_EDITOR>() )
+    {
+        return true;
+    }
+
+    if( ZONE_FILLER_TOOL* zoneFillerTool = mgr->GetTool<ZONE_FILLER_TOOL>();
+        zoneFillerTool && zoneFillerTool->IsBusy() )
+    {
+        return true;
+    }
+
+    if( ROUTER_TOOL* routerTool = mgr->GetTool<ROUTER_TOOL>();
+        routerTool && routerTool->RoutingInProgress() )
+    {
+        return true;
+    }
+
+    return false;
 }
 
 
 bool PCB_EDIT_FRAME::CanAcceptApiCommands()
 {
-    TOOL_BASE* currentTool = GetToolManager()->GetCurrentTool();
-
-    // When a single item that can be point-edited is selected, the point editor
-    // tool will be active instead of the selection tool.  It blocks undo/redo
-    // while the user is actually dragging points around, though, so we can use
-    // this as an initial check to prevent API actions when points are being edited.
-    if( UndoRedoBlocked() )
-        return false;
-
-    // Don't allow any API use while the user is using a tool that could
-    // modify the model in the middle of the message stream
-    if( currentTool != GetToolManager()->GetTool<PCB_SELECTION_TOOL>() &&
-        currentTool != GetToolManager()->GetTool<PCB_POINT_EDITOR>() )
-    {
-        return false;
-    }
-
-    ZONE_FILLER_TOOL* zoneFillerTool = m_toolManager->GetTool<ZONE_FILLER_TOOL>();
-
-    if( zoneFillerTool->IsBusy() )
-        return false;
-
-    ROUTER_TOOL* routerTool = m_toolManager->GetTool<ROUTER_TOOL>();
-
-    if( routerTool && routerTool->RoutingInProgress() )
+    if( interactiveOperationInProgress() )
         return false;
 
     return EDA_BASE_FRAME::CanAcceptApiCommands();
 }
 
+
+bool PCB_EDIT_FRAME::canRunAutoSave() const
+{
+    // Serializing a large board on the UI thread freezes the editor; never do it while the
+    // user is mid-operation or the deferred input gets misinterpreted (e.g. a routed track
+    // ending where the cursor lands once the editor unfreezes).
+    return !interactiveOperationInProgress();
+}
 
 
 wxString PCB_EDIT_FRAME::GetCurrentFileName() const

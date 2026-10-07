@@ -30,6 +30,7 @@
 #include <file_history.h>
 #endif
 #include <kiface_base.h>
+#include <kiway.h>
 #include <pcb_edit_frame.h>
 #include <pcbnew_id.h>
 #ifdef KICAD_SCRIPTING
@@ -414,7 +415,8 @@ void PCB_EDIT_FRAME::doReCreateMenuBar()
     toolsMenu->AppendSeparator();
     toolsMenu->Add( ACTIONS::openPreferences );
 #else
-    toolsMenu->Add( ACTIONS::updatePcbFromSchematic )->Enable( !Kiface().IsSingle() );
+    toolsMenu->Add( ACTIONS::updatePcbFromSchematic )
+            ->Enable( !Kiface().IsSingle() || KIWAY::FaceRegistered( KIWAY::FACE_SCH ) );
     toolsMenu->Add( PCB_ACTIONS::showEeschema );
 
     if( !Kiface().IsSingle() )

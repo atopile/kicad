@@ -272,6 +272,8 @@ set( KICOMMON_SRCS
     kidialog.cpp
     kiid.cpp
     pcbjam_remote_lock.cpp
+    pcbjam_read_only.cpp
+    pcbjam_editor_events.cpp
     kiway.cpp
     kiway_mail.cpp
     kiway_holder.cpp
@@ -332,6 +334,10 @@ if( UNIX AND NOT APPLE AND NOT EMSCRIPTEN )
     )
 endif()
 
+list( APPEND KICOMMON_SRCS
+    navlib_safe_init.cpp
+)
+
 if( KICAD_SCRIPTING )
     list( APPEND KICOMMON_SRCS
         ../scripting/python_scripting.cpp
@@ -367,9 +373,19 @@ if( EMSCRIPTEN AND NOT KICAD_IPC_API )
     )
 endif()
 
-add_library( kicommon SHARED
-    ${KICOMMON_SRCS}
-    )
+# WASM: STATIC, not SHARED. emcc 6 treats a .so input as a REAL dynamic
+# dependency (DT_NEEDED resolved at runtime — the app 404s fetching
+# libkicommon.so.10.0.4 at boot); emcc 4 folded it in statically. A static
+# archive restores that monolithic link.
+if( EMSCRIPTEN )
+    add_library( kicommon STATIC
+        ${KICOMMON_SRCS}
+        )
+else()
+    add_library( kicommon SHARED
+        ${KICOMMON_SRCS}
+        )
+endif()
 
 if( KICAD_USE_PCH )
     target_precompile_headers( kicommon
@@ -470,6 +486,15 @@ if( APPLE )
 endif()
 
 target_compile_definitions( kicommon PRIVATE KICOMMON_DLL=1 )
+
+# Feed the desktop application identifiers to the Wayland app_id logic in pgm_base.cpp
+# so the compositor matches windows to the installed desktop files (regular, Flatpak,
+# and Nightly builds each install a different reverse-DNS prefix).
+if( UNIX AND NOT APPLE )
+    set_property( SOURCE pgm_base.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        KICAD_DESKTOP_APP_NAME="${KICAD_APP_NAME}"
+        KICAD_DESKTOP_APP_PREFIX="${KICAD_APP_PREFIX}" )
+endif()
 
 target_include_directories( kicommon
     PUBLIC
@@ -1021,6 +1046,7 @@ set( PCB_COMMON_SRCS
     ${CMAKE_SOURCE_DIR}/pcbnew/pcb_group.cpp
     ${CMAKE_SOURCE_DIR}/pcbnew/pcb_marker.cpp
     ${CMAKE_SOURCE_DIR}/pcbnew/footprint.cpp
+    ${CMAKE_SOURCE_DIR}/pcbnew/footprint_courtyard_index.cpp
     ${CMAKE_SOURCE_DIR}/pcbnew/footprint_library_adapter.cpp
     ${CMAKE_SOURCE_DIR}/pcbnew/fix_board_shape.cpp
     ${CMAKE_SOURCE_DIR}/pcbnew/layer_utils.cpp
@@ -1145,6 +1171,7 @@ target_link_libraries( pcbcommon PUBLIC
     delaunator
     kimath
     kiplatform
+    markdown_lib
     nanoflann
     zint
 )

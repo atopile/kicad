@@ -2727,8 +2727,7 @@ void APPEARANCE_CONTROLS::rebuildNets()
 
 void APPEARANCE_CONTROLS::rebuildLayerPresetsWidget( bool aReset )
 {
-    m_viewportsLabel->SetLabel( wxString::Format( _( "Presets (%s+Tab):" ),
-                                                  KeyNameFromKeyCode( PRESET_SWITCH_KEY ) ) );
+    m_presetsLabel->SetLabel( wxString::Format( _( "Presets (%s+Tab):" ), KeyNameFromKeyCode( PRESET_SWITCH_KEY ) ) );
 
     m_cbLayerPresets->Clear();
 

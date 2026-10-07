@@ -35,6 +35,7 @@
 #include <design_block.h>
 #include <design_block_library_adapter.h>
 #include <design_block_tree_model_adapter.h>
+#include <kiplatform/ui.h>
 
 wxObjectDataPtr<LIB_TREE_MODEL_ADAPTER>
 DESIGN_BLOCK_TREE_MODEL_ADAPTER::Create( EDA_BASE_FRAME* aParent, DESIGN_BLOCK_LIBRARY_ADAPTER* aLibs,
@@ -101,7 +102,9 @@ void DESIGN_BLOCK_TREE_MODEL_ADAPTER::AddLibraries( EDA_BASE_FRAME* aParent )
         bool pinned = alg::contains( cfg->m_Session.pinned_design_block_libs, libName )
                       || alg::contains( project.m_PinnedDesignBlockLibs, libName );
 
-        DoAddLibrary( libName, row->Description(), getDesignBlocks( aParent, libName ), pinned, true );
+        // Design blocks come back in filesystem enumeration order, so they are not presorted;
+        // let AssignIntrinsicRanks() sort them by name.
+        DoAddLibrary( libName, row->Description(), getDesignBlocks( aParent, libName ), pinned, false );
     }
 
     m_tree.AssignIntrinsicRanks( m_shownColumns );
@@ -110,6 +113,12 @@ void DESIGN_BLOCK_TREE_MODEL_ADAPTER::AddLibraries( EDA_BASE_FRAME* aParent )
 
 void DESIGN_BLOCK_TREE_MODEL_ADAPTER::ClearLibraries()
 {
+    // A queued GtkTreeView scroll target holds a row reference into the nodes we are about to
+    // free.  Unlike UpdateSearchString's reset, this teardown happens out-of-band, so the later
+    // CancelPendingScroll would flush the reference against freed memory.  Drop it here while the
+    // rows it points at are still valid (#24757).
+    KIPLATFORM::UI::CancelPendingScroll( m_widget );
+
     m_tree.Clear();
 }
 

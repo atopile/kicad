@@ -56,6 +56,8 @@
 
 #include <core/profile.h>
 
+#include <wx/display.h>
+
 #include <pgm_base.h>
 #include <confirm.h>
 
@@ -75,8 +77,6 @@ EDA_DRAW_PANEL_GAL::EDA_DRAW_PANEL_GAL( wxWindow* aParentWindow, wxWindowID aWin
         m_MouseCapturedLost( false ),
         m_parent( aParentWindow ),
         m_edaFrame( nullptr ),
-        m_lastRepaintStart( 0 ),
-        m_lastRepaintEnd( 0 ),
         m_drawing( false ),
         m_drawingEnabled( false ),
         m_needIdleRefresh( false ),
@@ -270,7 +270,7 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
     if( m_drawing )
         return false;
 
-    m_lastRepaintStart = wxGetLocalTimeMillis();
+    m_lastRepaintStart = std::chrono::steady_clock::now();
 
     // Repaint the canvas, and fix scrollbar cursors
     // Usually called by a OnPaint event, but because it does not use a wxPaintDC,
@@ -315,7 +315,7 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
         // because the window content may have been invalidated by the OS.
         if( aAllowSkip && !viewDirty && !cursorMoved && !hasPendingItemUpdates )
         {
-            m_lastRepaintEnd = wxGetLocalTimeMillis();
+            m_lastRepaintEnd = std::chrono::steady_clock::now();
             return true;
         }
 
@@ -351,7 +351,7 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
         // view targets nor the cursor position have changed.
         if( aAllowSkip && !viewDirty && !cursorMoved )
         {
-            m_lastRepaintEnd = wxGetLocalTimeMillis();
+            m_lastRepaintEnd = std::chrono::steady_clock::now();
             return true;
         }
 
@@ -437,13 +437,19 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
         );
     }
 
-    m_lastRepaintEnd = wxGetLocalTimeMillis();
+    m_lastRepaintEnd = std::chrono::steady_clock::now();
 
     return true;
 }
 
 
 void EDA_DRAW_PANEL_GAL::onSize( wxSizeEvent& aEvent )
+{
+    ResizeGal();
+}
+
+
+void EDA_DRAW_PANEL_GAL::ResizeGal( bool aForce )
 {
     // If we get a second wx update call before the first finishes, don't crash
     if( m_gal->IsContextLocked() )
@@ -453,7 +459,7 @@ void EDA_DRAW_PANEL_GAL::onSize( wxSizeEvent& aEvent )
     wxSize                    clientSize = GetClientSize();
     WX_INFOBAR* infobar = GetParentEDAFrame() ? GetParentEDAFrame()->GetInfoBar() : nullptr;
 
-    if( ToVECTOR2I( clientSize ) == m_gal->GetScreenPixelSize() )
+    if( !aForce && ToVECTOR2I( clientSize ) == m_gal->GetScreenPixelSize() )
         return;
 
     // Note: ( +1, +1 ) prevents an ugly black line on right and bottom on Mac
@@ -475,8 +481,8 @@ void EDA_DRAW_PANEL_GAL::onSize( wxSizeEvent& aEvent )
             m_view->SetCenter( bottom - m_view->ToWorld( halfScreen, false ) );
         }
 
-        m_view->MarkTargetDirty( KIGFX::TARGET_CACHED );
-        m_view->MarkTargetDirty( KIGFX::TARGET_NONCACHED );
+        // ResizeScreen reallocates every compositor buffer, so nothing survives the resize
+        m_view->MarkDirty();
     }
 }
 
@@ -489,17 +495,31 @@ void EDA_DRAW_PANEL_GAL::RequestRefresh()
 
 void EDA_DRAW_PANEL_GAL::Refresh( bool aEraseBackground, const wxRect* aRect )
 {
-    wxLongLong now = wxGetLocalTimeMillis();
-    wxLongLong delta = now - m_lastRepaintEnd;
+    auto now = std::chrono::steady_clock::now();
+    auto delta = std::chrono::duration_cast<std::chrono::milliseconds>( now - m_lastRepaintStart ).count();
     bool galInitialized = m_gal && m_gal->IsInitialized();
 
     // When vsync is available the driver throttles SwapBuffers, so we only need
     // a small guard to avoid queueing work faster than the GPU can consume it.
-    // Without vsync, enforce a 60 FPS ceiling to prevent saturating the GPU.
+    // Without vsync, cap the render rate at the monitor refresh rate so the
+    // GPU is not saturated producing frames that will never be shown.
     int minPeriodMs = 3;
 
     if( galInitialized && m_gal->GetSwapInterval() == 0 )
-        minPeriodMs = 16;
+    {
+        // wxDisplay reports 0 on headless, some virtualized, and a few driver
+        // combinations. Clamp to a plausible monitor range before trusting it
+        // and fall back to 60 Hz otherwise.
+        int refreshHz = 60;
+        int reported = wxDisplay( this ).GetCurrentMode().refresh;
+
+        if( reported >= 24 && reported <= 1000 )
+            refreshHz = reported;
+
+        refreshHz += 5; // Repaint slightly faster to avoid adding latency
+
+        minPeriodMs = 1000 / refreshHz;
+    }
 
     if( delta >= minPeriodMs )
     {
@@ -508,7 +528,7 @@ void EDA_DRAW_PANEL_GAL::Refresh( bool aEraseBackground, const wxRect* aRect )
     }
     else if( !m_refreshTimer.IsRunning() )
     {
-        m_refreshTimer.StartOnce( ( minPeriodMs - delta ).GetValue() );
+        m_refreshTimer.StartOnce( static_cast<int>( minPeriodMs - delta ) );
     }
 }
 

@@ -1347,6 +1347,12 @@ list( APPEND CMAKE_CTEST_ARGUMENTS "--output-on-failure" )
 # 'CMakeLists.txt' files to process
 #================================================
 
+# Desktop application identifiers, shared by resource metadata generation and the
+# runtime Wayland app_id in kicommon (must be visible before both subdirectories).
+if( UNIX AND NOT APPLE )
+    include( ${KICAD_CMAKE_MODULE_PATH}/KiCadAppNames.cmake )
+endif()
+
 # Binaries ( CMake targets )
 # Build API when IPC API is enabled (works for both native and WASM)
 if( KICAD_IPC_API )
@@ -1366,13 +1372,6 @@ if( NOT KICAD_WASM_PCB_ONLY )
     add_subdirectory( gerbview )
 endif()
 add_subdirectory( pcbnew )
-if( EMSCRIPTEN AND KICAD_WASM_MERGED_EDITOR )
-    # Merged pcbnew+eeschema editor executable. Lives in the WASM layer (outside the
-    # fork); must come after eeschema and pcbnew so both kifaces' CACHE INTERNAL
-    # library lists exist. The binary dir name doubles as the artifact subdir
-    # (build-wasm/kicad-kicad_editor/kicad_editor/kicad_editor.{js,wasm}).
-    add_subdirectory( ${KICAD_WASM_LAYER}/editor ${CMAKE_BINARY_DIR}/kicad_editor )
-endif()
 if( EMSCRIPTEN AND KICAD_OCC_SERVICE_WASM )
     # Standalone OCC worker-service executable (docs/features/occ-split/). Lives in
     # the WASM layer (outside the fork); must come after pcbnew so its CACHE INTERNAL
@@ -1380,15 +1379,30 @@ if( EMSCRIPTEN AND KICAD_OCC_SERVICE_WASM )
     # as the artifact subdir (build-wasm/kicad-occ_service/occ_service/).
     add_subdirectory( ${KICAD_WASM_LAYER}/occ-service ${CMAKE_BINARY_DIR}/occ_service )
 endif()
-# idf3 is still linked by pcbnew until the exporter/importer pruning phase, so
-# keep utils configured in both profiles. The remaining programs are not part
-# of the embedded layout editor.
 if( NOT KICAD_WASM_PCB_ONLY )
+    option( KICAD_TOOLS_WASM
+        "WASM only: merged headless CLI linking both dieted kifaces (kicad_tools)" OFF )
+    if( EMSCRIPTEN AND KICAD_TOOLS_WASM )
+        # Merged headless CLI (pcbjam-mcp 0001 tier 3a): sym_convert + pcb_convert
+        # subcommands in one node-WASM image. Lives in the WASM layer (outside the
+        # fork); must come after eeschema and pcbnew so both kifaces' CACHE INTERNAL
+        # library lists exist. Configure with BOTH diet options ON (see
+        # wasm/tools/CMakeLists.txt). The binary dir name doubles as the artifact
+        # subdir (build-wasm/kicad-kicad_tools/kicad_tools/kicad_tools.{js,wasm}).
+        add_subdirectory( ${KICAD_WASM_LAYER}/tools ${CMAKE_BINARY_DIR}/kicad_tools )
+    endif()
     add_subdirectory( pagelayout_editor )
     add_subdirectory( bitmap2component )
     add_subdirectory( pcb_calculator )
     add_subdirectory( plugins )             # 3D plugins must be built before kicad
     add_subdirectory( cvpcb )               # must be after pcbnew
+    if( EMSCRIPTEN AND KICAD_WASM_MERGED_EDITOR )
+        # Merged pcbnew+eeschema(+cvpcb) editor executable. Lives in the WASM layer
+        # (outside the fork); must come after eeschema, pcbnew AND cvpcb so all three
+        # kifaces' CACHE INTERNAL library lists exist. The binary dir name doubles as the
+        # artifact subdir (build-wasm/kicad-kicad_editor/kicad_editor/kicad_editor.{js,wasm}).
+        add_subdirectory( ${KICAD_WASM_LAYER}/editor ${CMAKE_BINARY_DIR}/kicad_editor )
+    endif()
     add_subdirectory( kicad )               # should follow pcbnew, eeschema, api
     add_subdirectory( tools )
 endif()

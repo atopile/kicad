@@ -61,6 +61,13 @@ enum PAGE_OPTION
 };
 
 /**
+ * Upper bound on DS_DATA_ITEM::m_RepeatCount.
+ *
+ * Every repeat is a real draw item, so an unbounded count stalls the editor.
+ */
+constexpr int DS_MAX_REPEAT_COUNT = 100;
+
+/**
  * A coordinate point.
  *
  * The position is always relative to the corner anchor.
@@ -308,13 +315,11 @@ public:
     virtual int GetPenSizeIU() override;
 
     /**
-     * Try to build text which is an increment of m_TextBase
-     * has meaning only if m_TextBase is a basic text (one char)
-     * If the basic char is a digit, build a number
-     * If the basic char is a letter, use the letter with ASCII code
-     * aIncr + (basic char ascc code)
+     * Build an incremented copy of m_TextBase into m_FullText.
+     * The rightmost letter or number is stepped by aIncr, carrying within its
+     * own type (a letter rolls z -> aa, a number counts up). If nothing can be
+     * stepped, m_FullText is left equal to m_TextBase.
      * @param aIncr = the increment value
-     * return the incremented label in m_FullText
      */
     void IncrementLabel( int aIncr );
 

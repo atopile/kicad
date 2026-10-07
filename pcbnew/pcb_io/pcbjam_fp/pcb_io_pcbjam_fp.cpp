@@ -51,24 +51,45 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pcbjam_fp_libs_finish( em_proxying_ctx* aCt
     emscripten_proxy_finish( aCtx );
 }
 
-// Main-thread path: suspends the calling C++ stack via Asyncify until the
-// provider's promise resolves.  Returns a malloc'd UTF-8 string (caller frees)
-// or 0 on failure.  globalThis here is the window, where the standalone installs
-// the provider.  The 4th arg carries the item kind ("footprint").
-EM_ASYNC_JS( char*, pcbjam_fp_libs_request_js,
-             ( const char* aOp, const char* aLib, const char* aArg, const char* aKind ), {
+// Main-thread path, Phase E shape (docs/features/async/22 §5, K2): the request
+// does not park the stack it stands on — it opens a wait token, starts the JS
+// request, and waits via wxWasmYieldUntil (context park when the frame stands
+// on a scheduler context, in-place park otherwise).
+//
+// Every resolution defers to at least a microtask, NEVER synchronously from
+// this call: the C++ caller has not parked yet, and wxWasmYieldUntil's
+// early-resolve peek is the other half of that contract (doc 22 §10, the
+// Phase E retry entry).
+EM_JS( void, pcbjam_fp_libs_request_start,
+       ( int aToken, const char* aOp, const char* aLib, const char* aArg, const char* aKind ), {
+    const op = UTF8ToString( aOp ), lib = UTF8ToString( aLib );
+    const arg = UTF8ToString( aArg ), kind = UTF8ToString( aKind );
+    const finish = ( ptr ) => globalThis.__wxScheduler.resolveWait( aToken, ptr );
+
     const hook = globalThis.kicadLibs;
 
     if( !hook || !hook.request )
-        return 0;
+    {
+        Promise.resolve().then( () => finish( 0 ) );
+        return;
+    }
+
+    let req;
 
     try
     {
-        const res = await hook.request( UTF8ToString( aOp ), UTF8ToString( aLib ),
-                                        UTF8ToString( aArg ), UTF8ToString( aKind ) );
+        req = Promise.resolve( hook.request( op, lib, arg, kind ) );
+    }
+    catch( e )
+    {
+        console.error( 'kicadLibs.request (footprint) failed:', e );
+        Promise.resolve().then( () => finish( 0 ) );
+        return;
+    }
 
+    req.then( ( res ) => {
         if( res == null )
-            return 0;
+            return finish( 0 );
 
         // "Copy as-is": the fat list (list/bodies) returns the raw item bytes as a
         // Uint8Array — memcpy straight into the wasm heap, no string/JSON detour.
@@ -77,22 +98,31 @@ EM_ASYNC_JS( char*, pcbjam_fp_libs_request_js,
         if( res instanceof Uint8Array )
         {
             const p = _pcbjam_fp_libs_alloc( res.length + 1 );
+            if( !p )
+                return finish( 0 ); // F-3: address 0 is writable — a failed alloc must not become a write
             HEAPU8.set( res, p );
             HEAPU8[p + res.length] = 0;
-            return p;
+            return finish( p );
         }
 
         const len = lengthBytesUTF8( res ) + 1;
         const ptr = _pcbjam_fp_libs_alloc( len );
+        if( !ptr )
+            return finish( 0 ); // F-3: settle with the callers' ordinary "unavailable" value
         stringToUTF8( res, ptr, len );
-        return ptr;
-    }
-    catch( e )
-    {
+        finish( ptr );
+    } ).catch( ( e ) => {
         console.error( 'kicadLibs.request (footprint) failed:', e );
-        return 0;
-    }
+        finish( 0 );
+    } );
 } );
+
+// Token waits live in the wx wasm port (evtloop.cpp). WEAK: the pcb_convert
+// diet compiles this TU without the wx wasm port — there the registry is
+// absent, and so is any /mnt/pcbjam provider, so a null resolves to "request
+// unavailable" (nullptr).
+extern "C" int wxWasmBeginWait( const char* aKind ) __attribute__(( weak ));
+extern "C" int wxWasmYieldUntil( int aToken ) __attribute__(( weak ));
 
 
 struct PCBJAM_FP_LIBS_REQ
@@ -142,6 +172,8 @@ static void pcbjam_fp_libs_request_on_main( em_proxying_ctx* aCtx, void* aArg )
                 if( res instanceof Uint8Array )
                 {
                     const p = _pcbjam_fp_libs_alloc( res.length + 1 );
+                    if( !p )
+                        return done( 0 ); // F-3: never write through a failed alloc; still release the worker
                     HEAPU8.set( res, p );
                     HEAPU8[p + res.length] = 0;
                     done( p );
@@ -150,6 +182,8 @@ static void pcbjam_fp_libs_request_on_main( em_proxying_ctx* aCtx, void* aArg )
 
                 const len = lengthBytesUTF8( res ) + 1;
                 const ptr = _pcbjam_fp_libs_alloc( len );
+                if( !ptr )
+                    return done( 0 ); // F-3: settle with the callers' ordinary "unavailable" value
                 stringToUTF8( res, ptr, len );
                 done( ptr );
             } )
@@ -161,25 +195,44 @@ static void pcbjam_fp_libs_request_on_main( em_proxying_ctx* aCtx, void* aArg )
 }
 
 
-// Serialize worker-thread proxied requests. The footprint chooser enumerates
-// every library concurrently (one thread-pool task per lib), so multiple pthreads
-// would proxy into the main thread at once. Concurrent C reentry into the
-// Asyncify-suspended runtime corrupts its state ("table index out of bounds").
-// A global lock held across the whole proxy+fetch round-trip serializes them; it
-// parks extra worker threads (not the main thread), so the UI stays live. (Same
-// reasoning as the symbol bridge; this is a distinct lock for the pcbnew binary.)
+// Single-flight throttle for worker-thread proxied requests. The footprint
+// chooser enumerates every library concurrently (one thread-pool task per lib),
+// so multiple pthreads would proxy into the main thread at once, fanning the
+// whole library set out as parallel provider fetches. A global lock held across
+// the whole proxy+fetch round-trip keeps it to one in-flight request at a time;
+// it parks extra worker threads (not the main thread), so the UI stays live.
+// (Same reasoning as the symbol bridge; this is a distinct lock for the pcbnew
+// binary.)
 static std::mutex g_pcbjamFpProxyMutex;
 
 // Dispatch on the calling thread.  Library loads come in on KiCad thread-pool
 // pthreads; there we proxy to the main thread and futex-block until the fetch
-// settles — legal on a worker.  Calls already on the main thread use the Asyncify
-// suspension instead (blocking the main thread is not an option, and proxy-to-
-// self would deadlock).
+// settles — legal on a worker.  Calls already on the main thread suspend via the
+// JSPI token wait instead (blocking the main thread is not an option, and
+// proxy-to-self would deadlock).
 static char* pcbjam_fp_libs_request_dispatch( const char* aOp, const char* aLib, const char* aArg,
                                               const char* aKind )
 {
     if( emscripten_is_main_runtime_thread() )
-        return pcbjam_fp_libs_request_js( aOp, aLib, aArg, aKind );
+    {
+        if( !wxWasmBeginWait || !wxWasmYieldUntil )
+            return nullptr;   // converter diet: no wait registry, no provider
+
+        const int token = wxWasmBeginWait( "fp-lib" );
+
+        // Token 0 = the scheduler refused the wait (dead or terminal
+        // instance): never start a request whose completion could not be
+        // admitted.
+        if( token <= 0 )
+            return nullptr;
+
+        pcbjam_fp_libs_request_start( token, aOp, aLib, aArg, aKind );
+
+        // The result is the malloc'd pointer, carried through the wait as an
+        // int32; recover the full unsigned address before widening.
+        const int r = wxWasmYieldUntil( token );
+        return (char*) (uintptr_t) (uint32_t) r;
+    }
 
     PCBJAM_FP_LIBS_REQ req{ aOp, aLib, aArg, aKind, nullptr };
 
@@ -418,8 +471,8 @@ void PCB_IO_PCBJAM_FP::fatLoad( const wxString& aLibraryPath )
     // parseFpDoc is pure (no member/global state, no bridge call), so this is safe
     // off the app thread; the wait() yields via the build's main-thread
     // nanosleep->yield shim, mirroring the 3D raytracer's submit_blocks/wait and the
-    // symbol plugin's fatLoad. Fetch (Asyncify, above) and the cache merge (below)
-    // stay on the calling app thread.
+    // symbol plugin's fatLoad. The suspending fetch (above) and the cache merge
+    // (below) stay on the calling app thread.
     const size_t            count = offs.size();
     std::vector<FOOTPRINT*> parsed( count, nullptr );
 
@@ -464,7 +517,18 @@ FOOTPRINT* PCB_IO_PCBJAM_FP::FootprintLoad( const wxString& aLibraryPath,
                                             const std::map<std::string, UTF8>* aProperties )
 {
     if( FOOTPRINT* master = loadOne( aLibraryPath, aFootprintName ) )
-        return static_cast<FOOTPRINT*>( master->Clone() );
+    {
+        // Mirror PCB_IO_KICAD_SEXPR::FootprintLoad. Only the footprint editor keeps the library
+        // uuids (aKeepUUID); every other load is a NEW footprint and needs new ones. A plain
+        // Clone() of the cached master handed out the master's uuids on every load, so parts
+        // placed from one library footprint shared one identity: Update PCB with three
+        // identical LEDs made three footprints with one uuid, and the collab room (keyed by
+        // uuid) kept only one of them.
+        FOOTPRINT* copy = aKeepUUID ? static_cast<FOOTPRINT*>( master->Clone() )
+                                    : static_cast<FOOTPRINT*>( master->Duplicate( IGNORE_PARENT_GROUP ) );
+        copy->SetParent( nullptr );
+        return copy;
+    }
 
     return nullptr;
 }
